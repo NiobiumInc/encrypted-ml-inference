@@ -1,65 +1,45 @@
 #!/usr/bin/env bash
-
-# Copyright (c) 2025 HomomorphicEncryption.org
-# All rights reserved.
+# Copyright 2023-present Niobium Microsystems, Inc.
 #
-# This software is licensed under the terms of the Apache v2 License.
-# See the LICENSE.md file for details.
-
-# ------------------------------------------------------------
-# Usage: ./scripts/build_task.sh <TASK_DIR>
-# Compiles the files in the source directory.
-# ------------------------------------------------------------
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# build_task.sh — self-contained SDK build (FHETCH transport). The niobium-client
+# submodule builds its OWN bundled OpenFHE + libnbfhetch + the FHETCH transport,
+# and the ML-inference stages build against that. Run from the repo root. No
+# compiler checkout required. See NIOBIUM_INTEGRATION.md.
 set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
 
-# Define core paths
-ROOT="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )/.." &> /dev/null && pwd )"
-TASK_DIR="$1"
-BUILD="$TASK_DIR/build"
-NPROC=$(nproc 2>/dev/null || sysctl -n hw.ncpu || echo 4)
+echo "=== [1/3] sync niobium-client (its OpenFHE + niobium-fhetch + cpp-httplib) ==="
+git submodule update --init niobium-client
+git -C niobium-client submodule update --init --recursive
 
-# --- 1. LibTorch (PyTorch C++ distribution) ---
-LIBTORCH_DIR="$ROOT/third_party/libtorch"
-LIBTORCH_ZIP_NAME="libtorch_temp.zip"
-LIBTORCH_URL="https://download.pytorch.org/libtorch/cpu/libtorch-cxx11-abi-shared-with-deps-2.5.1%2Bcpu.zip"
+echo "=== [2/3] build the client's bundled OpenFHE + libnbfhetch + transport (make release) ==="
+make -C niobium-client release        # installs OpenFHE to niobium-client/vendor/lib/openfhe
 
-if [ ! -d "$LIBTORCH_DIR" ]; then
-    echo "Downloading LibTorch..."
-    mkdir -p "$ROOT/third_party"
-    cd "$ROOT/third_party"
+OPENFHE_PREFIX="$ROOT/niobium-client/vendor/lib/openfhe"
+[[ -d "$OPENFHE_PREFIX" ]] || { echo "error: client OpenFHE not at $OPENFHE_PREFIX after 'make release'" >&2; exit 1; }
 
-    # Use -O to force the output filename and avoid ".zip.1" duplicates
-    # We also remove any existing partial downloads first to be safe
-    rm -f "$LIBTORCH_ZIP_NAME"
-    wget -O "$LIBTORCH_ZIP_NAME" "$LIBTORCH_URL"
-    
-    echo "Unzipping LibTorch..."
-    unzip -q "$LIBTORCH_ZIP_NAME"
-    rm "$LIBTORCH_ZIP_NAME"
-    
-    cd "$ROOT"
-    echo "LibTorch successfully set up at $LIBTORCH_DIR"
-fi
+echo "=== [3/3] build the ML-inference stages + SDK server against the client's OpenFHE ==="
+cmake -S . -B build \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DNIOBIUM_SDK_BUILD=ON \
+  -DCMAKE_PREFIX_PATH="$OPENFHE_PREFIX"
+cmake --build build -j \
+  --target client_key_generation client_preprocess_input client_encode_encrypt_input \
+           client_decrypt_decode client_postprocess server_preprocess_model \
+           server_encrypted_compute_sdk
 
-# --- 2. nlohmann/json ---
-NLOHMANN_DIR="$ROOT/third_party/nlohmann"
-NLOHMANN_HEADER="$NLOHMANN_DIR/json.hpp"
-NLOHMANN_URL="https://raw.githubusercontent.com/nlohmann/json/develop/single_include/nlohmann/json.hpp"
-
-if [[ ! -f "$NLOHMANN_HEADER" ]]; then
-      echo "Downloading nlohmann/json..."
-      mkdir -p "$NLOHMANN_DIR"
-      curl -L -o "$NLOHMANN_HEADER" "$NLOHMANN_URL"
-fi
-
-# --- 3. Build Process ---
-# We assume OpenFHE is in /third_party/openfhe or provided via CMAKE_PREFIX_PATH.
-echo "Configuring project with CMake..."
-cmake -S "$TASK_DIR" -B "$BUILD" \
-      -DCMAKE_PREFIX_PATH="$ROOT/third_party/openfhe;$ROOT/third_party/libtorch"
-
-echo "Compiling with $NPROC cores..."
-cd "$BUILD"
-make -j"$NPROC"
-
-echo "Build complete."
+echo "=== done: binaries in $ROOT/build ==="
+ls -la build/server_encrypted_compute_sdk build/client_key_generation

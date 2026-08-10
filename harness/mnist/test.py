@@ -58,7 +58,9 @@ def predict(pixels_file, model_path="mnist_ffnn_model.pth", predictions_file='pr
     pixel_tensor = torch.tensor(pixel_data, dtype=torch.float32).to(device)
     # Apply MNIST normalization: (pixel - mean) / std
     pixel_tensor = (pixel_tensor - 0.1307) / 0.3081
-
+    
+    predictions = []
+    
     # Make predictions
     with torch.no_grad():
         outputs = model(pixel_tensor)

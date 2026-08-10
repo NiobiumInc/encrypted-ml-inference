@@ -1,12 +1,19 @@
 # Measurements
 
-When running `python ./harness/run_submission.py <some-variant>`, it will generate measurement files in a sub-directory under this directory.
-Specifically, the sub-directories that it uses are `single`, `small`, `medium` and `large` for the ml-inference variants.
+`harness/run_submission.py` writes per-run diagnostics here — the local CPU
+**record** log for each profile (`<profile>_record.log`). These are regenerated
+every run and are git-ignored.
 
-If it is run with argument `--num_runs <n>` it will generate `<n>` measurements files called `results-1.json`, ..., `results-<n>.json`, all in the same sub-directory.
+The canonical, portable **run artifact** for a transport run is written under
+`runs/<id>/` (also git-ignored), not here. It contains, per batch:
 
-Before submitting your implementation, run the `run_submission.py` script with argument `--num_runs 3` for each variant of the workload that you want to submit. Then commit all these results file to your fork, the average of these three runs will be the numbers reported for your submission.
+- `expected_batch<b>.csv` — the plaintext-FHE (CPU) reference logits ("expected")
+- `scores_batch<b>.csv` — the replay (FUNC_SIM / FPGA / Fog) logits ("got")
+- `batch<b>.log` — the per-batch cpu-only + replay + decrypt log
+- `run.json` — the manifest (profile, target, opt_level, per-batch
+  `expected_label` / `got_label` / `match` / `rel_error` / `replay_ms`)
 
-## Results for the reference implementation
-
-For the reference implementation we only produced measurements for single, small and medium instances. You can find these measurements in the sub-directories here, they were generated in February 2026.
+The harness prints an expected-vs-got summary after decryption and writes the
+CSVs + `run.json` for programmatic use. See
+[NIOBIUM_INTEGRATION.md](../NIOBIUM_INTEGRATION.md) for the full run-artifact
+contract.

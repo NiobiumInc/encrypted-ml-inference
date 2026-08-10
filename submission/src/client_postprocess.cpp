@@ -1,0 +1,54 @@
+// Copyright 2025 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+// Modifications Copyright 2023-present Niobium Microsystems, Inc.
+// HEIR v2 postprocessing: reads model scores, applies argmax over 10 classes.
+#include "utils.h"
+#include "params.h"
+#include "mlp_encryption_utils.h"
+#include <fstream>
+#include <sstream>
+#include <vector>
+
+using namespace lbcrypto;
+
+int main(int argc, char* argv[]){
+
+    if (argc < 2 || !std::isdigit(argv[1][0])) {
+        std::cout << "Usage: " << argv[0] << " instance-size\n";
+        std::cout << "  Instance-size: 0-single, 1-small, 2-medium (all ring 2^16, FPGA)\n";
+        return 0;
+    }
+    auto size = static_cast<InstanceSize>(std::stoi(argv[1]));
+    InstanceParams prms(size);
+
+    std::vector<Score> dataset;
+    load_scores(dataset, prms.model_scores_file().c_str());
+    if (dataset.empty()) {
+        throw std::runtime_error("No data found in " + prms.model_scores_file().string());
+    }
+
+    if (dataset.size() != prms.getBatchSize()) {
+        throw std::runtime_error("Dataset size does not match instance size");
+    }
+
+    auto result_path = prms.encrypted_model_predictions_file();
+    std::ofstream out(result_path);
+    for (auto& score : dataset) {
+        auto max_id = argmax(score.score, 10);
+        out << max_id << '\n';
+    }
+
+    return 0;
+}

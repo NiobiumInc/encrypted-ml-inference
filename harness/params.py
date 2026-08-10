@@ -17,17 +17,17 @@ params.py - Parameters and directory structure for the submission.
 
 from pathlib import Path
 
-# Enum for benchmark size
-SINGLE = 0
-SMALL = 1
-MEDIUM = 2
-LARGE = 3
+# Enum for benchmark size. All sizes use ring 2^16 (128-bit) for the Niobium
+# accelerator path.
+SINGLE = 0   # 1 batch
+SMALL  = 1   # 5 batches
+MEDIUM = 2   # 20 batches
 
 def instance_name(size):
     """Return the string name of the instance size."""
-    if size > LARGE:
+    names = ["single", "small", "medium"]
+    if size >= len(names):
         return "unknown"
-    names = ["single", "small", "medium", "large"]
     return names[size]
 
 class InstanceParams:
@@ -38,10 +38,11 @@ class InstanceParams:
         self.size = size
         self.rootdir = Path(rootdir) if rootdir else Path.cwd()
 
-        if size > LARGE:
+        if size > MEDIUM:
             raise ValueError("Invalid instance size")
-        
-        batch_size =              [1, 100, 1000, 10000]
+
+        #             single small  medium
+        batch_size = [    1,     5,     20]
 
         self.batch_size = batch_size[size]
 
@@ -54,10 +55,8 @@ class InstanceParams:
         """Return the submission directory of this repository."""
         return self.rootdir
 
-    def datadir(self, dataset=None):
+    def datadir(self):
         """Return the dataset directory path."""
-        # if dataset:
-        #     return self.rootdir / "datasets" / dataset / instance_name(self.size)
         return self.rootdir / "datasets" / instance_name(self.size)
     
     def dataset_intermediate_dir(self):

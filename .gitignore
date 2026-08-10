@@ -1,12 +1,14 @@
 # Build artefacts
+build/
 */build/
 io/
 third_party/
+measurements/*
+!measurements/README.md
+# Transport run artifacts (runs/<id>/) — regenerated per run
+runs/
 harness/__pycache__/
 harness/mnist/__pycache__/
-harness/cifar10/__pycache__/
-**/__pycache__/
-
 
 # Prerequisites
 *.d
@@ -36,8 +38,6 @@ harness/cifar10/__pycache__/
 *.a
 *.lib
 
-# Add pre-built OpenFHE library
-!submission/pre-built-library/libmlp_openfhe.a
 
 # Executables
 *.exe
@@ -48,15 +48,9 @@ harness/cifar10/__pycache__/
 .DS_Store
 .idea/
 .vscode/
-.venv/
 
 # Virtual environments
 virtualenv
-
-# Virtual environments
-virtualenv
-bmenv
-
 
 # Datasets, queries and results since we generate them on the fly
 datasets/*
@@ -67,16 +61,26 @@ datasets/*
 harness/mnist/data/*
 harness/mnist/mnist_ffnn_model.pth
 
-**/build/
+# Log files
+logs/
 
-# Temporary files for loading CIFAR-10 data and model training
-harness/cifar10/data/*
-harness/cifar10/data/
-harness/cifar10/cifar10_resnet20.pth
-harness/cifar10/cifar10_resnet20_model.pth
+# Ignore the environmrnt
+bmenv/
+# Ignore files created by the compiler
+_wl_*
+ml-inference_wl_*
+global_key_cache_*
 
+# backup files
+*.bak
 
-# Remote-submission artifacts
-ek.lpk
-submission_remote/__pycache__/
-submission_remote/mnist/__pycache__/
+# Investigation traces and profiling artefacts
+ml-inference_ems*_trace/
+*.profraw
+
+# Stale build/test dirs
+submission/cmake_build/
+submission/test_build/
+
+# Python caches
+scripts/__pycache__/

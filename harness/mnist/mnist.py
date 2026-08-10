@@ -24,30 +24,45 @@ MODEL_PATH = './harness/mnist/mnist_ffnn_model.pth'
 RNG_SEED = 42 # for reproducibility
 DATA_DIR='./harness/mnist/data'
 
-# Define command line flags safely to allow importing this module from other apps
-try:
-    flags.DEFINE_string('model_path', MODEL_PATH, 'Path to save/load the model')
-    flags.DEFINE_integer('batch_size', BATCH_SIZE, 'Batch size for training and evaluation')
-    flags.DEFINE_float('learning_rate', LEARNING_RATE, 'Learning rate for optimizer')
-    flags.DEFINE_integer('epochs', EPOCHS, 'Number of training epochs')
-    flags.DEFINE_string('data_dir', './harness/mnist/data', 'Directory to store/load MNIST dataset')
-    flags.DEFINE_boolean('no_cuda', False, 'Disable CUDA even if available')
-    flags.DEFINE_integer('seed', RNG_SEED, 'Random seed for reproducibility')
+# Define command line flags
+flags.DEFINE_string('model_path', MODEL_PATH, 'Path to save/load the model')
+flags.DEFINE_integer('batch_size', BATCH_SIZE, 'Batch size for training and evaluation')
+flags.DEFINE_float('learning_rate', LEARNING_RATE, 'Learning rate for optimizer')
+flags.DEFINE_integer('epochs', EPOCHS, 'Number of training epochs')
+flags.DEFINE_string('data_dir', './harness/mnist/data', 'Directory to store/load MNIST dataset')
+flags.DEFINE_boolean('no_cuda', False, 'Disable CUDA even if available')
+flags.DEFINE_integer('seed', RNG_SEED, 'Random seed for reproducibility')
 
-    flags.DEFINE_boolean('export_test_data', False, 'Export test dataset to file and exit')
-    flags.DEFINE_string('test_data_output', 'mnist_test.txt', 'Output file for exported test data')
-    flags.DEFINE_integer('num_samples', -1, 'Number of samples to export (-1 for all samples)')
+flags.DEFINE_boolean('export_test_data', False, 'Export test dataset to file and exit')
+flags.DEFINE_string('test_data_output', 'mnist_test.txt', 'Output file for exported test data')
+flags.DEFINE_integer('num_samples', -1, 'Number of samples to export (-1 for all samples)')
 
-    flags.DEFINE_boolean('predict', False, 'Run prediction on pixels file and exit')
-    flags.DEFINE_string('pixels_file', '', 'Path to file containing pixel data for prediction')
-    flags.DEFINE_string('predictions_file', 'predictions.txt', 'Output file for predictions')
-except flags.DuplicateFlagError:
-    pass
+flags.DEFINE_boolean('predict', False, 'Run prediction on pixels file and exit')
+flags.DEFINE_string('pixels_file', '', 'Path to file containing pixel data for prediction')
+flags.DEFINE_string('predictions_file', 'predictions.txt', 'Output file for predictions')
 
-# Ensure reproducibility
+# Ensure reproducibility — deterministic across machines/PyTorch versions.
+# Without these flags, the locally-trained mnist_ffnn_model.pth differs between
+# environments (cuDNN nondeterminism, autotuner, BLAS workspace), causing
+# cleartext accuracy to swing 4-6 points across runs.
+import os
+import random as _python_random
+import numpy as _np
+
+_python_random.seed(RNG_SEED)
+_np.random.seed(RNG_SEED)
 torch.manual_seed(RNG_SEED)
 if torch.cuda.is_available():
     torch.cuda.manual_seed_all(RNG_SEED)
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
+# Required by torch.use_deterministic_algorithms when using CUDA
+os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+try:
+    torch.use_deterministic_algorithms(True, warn_only=True)
+except (RuntimeError, AttributeError):
+    # Older PyTorch versions don't have warn_only; skip if unavailable
+    pass
 
 # 2. Data Loading and Preprocessing
 def get_mnist_transform():
@@ -127,14 +142,15 @@ def export_test_pixels_labels(data_dir=DATA_DIR, pixels_file="mnist_pixels.txt",
 
     # Get the total number of samples in the test dataset
     transform = transforms.Compose([
-        transforms.ToTensor(),  # Converts PIL Image or numpy.ndarray to FloatTensor and scales to [0.0, 1.0]
+        transforms.ToTensor(), # Converts PIL Image or numpy.ndarray to FloatTensor and scales to [0.0, 1.0]
     ])
     test_dataset = datasets.MNIST(data_dir, train=False, download=True, transform=transform)
     total_samples = len(test_dataset)
 
     # Determine how many samples to export
     samples_to_export = total_samples if num_samples == -1 else min(num_samples, total_samples)
-
+    
+    
     # Use sample_test_data to get random samples (but without normalization for export)
     if samples_to_export == total_samples:
         
