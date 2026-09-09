@@ -1,0 +1,191 @@
+# .github/workflows/compiler-tests.yml
+#
+# Public-repo compiler sanity check. Runs on the ephemeral GCP self-hosted
+# runner group (gcp-ephemeral) so the on-prem Niobium cluster is never
+# exposed to public-repo PRs. Adapted from fetch-by-similarity-submission's
+# compiler-tests.yml (mirrors niobium-client's own); see
+# https://github.com/NiobiumInc/gcp-github-runners
+# (workflow-snippets/README.md) for onboarding + operational details, and
+# this repo's NIOBIUM_INTEGRATION.md for the record/replay integration.
+#
+# ===========================================================================
+# HARD REQUIREMENT: NO nbcc / compiler output in the public Actions log.
+# Public repos => Actions logs AND artifacts are world-readable, with no
+# per-job privacy toggle. The transport server and the replay run both send
+# stdout+stderr to /dev/null; this workflow surfaces ONLY the exit status
+# (PASS / FAIL). Do NOT: echo compiler output, `set -x` around it, upload
+# trace/io/dataset artifacts, or print the SDK version.
+# ===========================================================================
+#
+# Never use pull_request_target with a checkout of the PR head.
+
+name: compiler-tests
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    # TEMPORARY: ci/add-compiler-tests-workflow added so pushes to this branch
+    # trigger a run while validating the workflow itself. Drop that branch
+    # name before merging to main — push should only fire on main.
+    branches: [main, ci/add-compiler-tests-workflow]
+  workflow_dispatch: {}
+
+# Least privilege: the job only needs to read the repo for checkout.
+permissions:
+  contents: read
+
+concurrency:
+  group: compiler-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compiler-tests:
+    name: Compiler tests (self-hosted, GCP)
+    # No size label yet: this workload (MNIST MLP, matmul->ReLU->matmul) is far
+    # smaller than FBS's, so the default gcp-ephemeral machine is the starting
+    # assumption, not a measured number. If this run is memory-starved, add a
+    # measured machine-type label here (see FBS's compiler-tests.yml history
+    # for the memory-monitor pattern used to size that one).
+    runs-on: [self-hosted, gcp-ephemeral]
+    # Cold OpenFHE build (~15 min, per niobium-client) + pip install torch/
+    # torchvision (no persistent cache on an ephemeral VM) + MNIST download/
+    # train (data-prep has no pretrained-weights fallback checked into this
+    # repo) + FBS-style record/replay round trip.
+    timeout-minutes: 75
+    env:
+      SDK: /mnt/niobium-sdk/sdk   # mounted RO at boot by runner-startup.sh
+      PORT: "9443"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          submodules: recursive
+
+      - name: Verify SDK is mounted (no version printed)
+        run: |
+          test -x "$SDK/bin/nbcc_fhetch_replay" || { echo "::error::SDK not mounted"; exit 1; }
+
+      - name: Install build tooling
+        run: |
+          sudo apt-get update -qq
+          # python3-pip: the harness's data-prep (harness/generate_dataset.py)
+          # trains harness/mnist against real torch/torchvision — there is no
+          # pretrained-weights fallback checked into this repo. This runner's
+          # base image ships no pip (confirmed in FBS/niobium-client's own
+          # workflow for the smaller python3-numpy case — don't assume
+          # otherwise), so install it via apt, then pip-install the rest.
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build python3-pip
+          python3 -m pip install --retries 5 -r requirements.txt
+          python3 -c "import numpy, torch, torchvision" || { echo "::error::torch/torchvision/numpy still not importable after pip install"; exit 1; }
+
+      - name: Build niobium-client + ML-inference stages (release)
+        # Public C++/OpenFHE output — OK to show; useful for diagnosing build breaks.
+        run: bash scripts/build_task.sh
+
+      - name: Map the SDK into the layout the transport server expects
+        run: |
+          # The server daemon --execs $NIOBIUM_COMPILER_ROOT/build/nbcc_fhetch_replay.
+          # The SDK ships bin/ + lib/; bridge with a shim of symlinks (same
+          # pattern as niobium-client's own compiler-tests.yml).
+          SHIM="$RUNNER_TEMP/nbcc-root"
+          mkdir -p "$SHIM/build"
+          ln -sf "$SDK"/bin/* "$SHIM/build/"
+          ln -sf "$SDK"/lib/* "$SHIM/build/"
+          test -x "$SHIM/build/nbcc_fhetch_replay" || { echo "::error::SDK missing nbcc_fhetch_replay"; exit 1; }
+          echo "NIOBIUM_COMPILER_ROOT=$SHIM" >> "$GITHUB_ENV"
+          # The compiler (run server-side by the transport) needs the SDK device
+          # specs for a non-trivial --target like FHE_SIM; without this it aborts
+          # with "Cannot find devices directory".
+          echo "NIOBIUM_SPEC_DIR=$SDK/share/niobium/devices" >> "$GITHUB_ENV"
+
+      # server_encrypted_compute_sdk calls niobium::compiler().replay()
+      # UNCONDITIONALLY (record-then-always-replay, see NIOBIUM_INTEGRATION.md),
+      # so for a non-local --target every batch dispatches over the transport —
+      # the server must already be up before the first harness call.
+      - name: Start the transport server (background, output suppressed)
+        run: |
+          set +x
+          CLIENT_ROOT="$GITHUB_WORKSPACE/niobium-client"
+          SERVER_BIN="$CLIENT_ROOT/build/src/fhetch_transport/nbcc_fhetch_replay_server"
+          COMPILER_BIN="$NIOBIUM_COMPILER_ROOT/build/nbcc_fhetch_replay"
+          test -x "$SERVER_BIN" || { echo "::error::server binary not built: $SERVER_BIN"; exit 1; }
+
+          ENV_FILE="$CLIENT_ROOT/build/niobium_client.env"
+          [ -f "$ENV_FILE" ] && . "$ENV_FILE"
+          : "${OPENFHE_LIB:=$CLIENT_ROOT/vendor/lib/openfhe/lib}"
+
+          # The server is a niobium-client binary and needs the client's OpenFHE
+          # on the loader path. But it spawns the compiler's replay binary as a
+          # child for every request, and a child inherits this environment —
+          # where an inherited search path takes precedence over the rpath the
+          # replay binary uses to find the OpenFHE it was built against. The two
+          # are independent builds, so it would load the client's instead, and
+          # whenever the two differ that surfaces as an undefined symbol at
+          # startup (the replay helper dies, the server then 500s).
+          #
+          # Clearing the path is not an option: the server and its children need
+          # *different* paths, not no path. So give the child its own
+          # environment — point --exec at a wrapper that swaps in the compiler's
+          # loader path and execs the real binary.
+          EXEC_WRAPPER="$RUNNER_TEMP/nbcc_fhetch_replay_exec_wrapper.sh"
+          cat > "$EXEC_WRAPPER" <<WRAPPER
+          #!/bin/bash
+          # Generated by compiler-tests.yml — do not edit.
+          export LD_LIBRARY_PATH="$NIOBIUM_COMPILER_ROOT/build"
+          exec "$COMPILER_BIN" "\$@"
+          WRAPPER
+          chmod +x "$EXEC_WRAPPER"
+
+          # Output kept out of the public log; PATH must include the compiler
+          # root's build/ dir — the compiler's "secondary replay" step execs a
+          # small `replay` helper binary by bare name, not full path (see
+          # niobium-client/FBS compiler-tests.yml for the same note).
+          LD_LIBRARY_PATH="$OPENFHE_LIB:$NIOBIUM_COMPILER_ROOT/build" \
+            PATH="$NIOBIUM_COMPILER_ROOT/build:$PATH" \
+            "$SERVER_BIN" --port "$PORT" --bind 127.0.0.1 --exec "$EXEC_WRAPPER" \
+            >"$RUNNER_TEMP/fhetch_server.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/fhetch_server.pid"
+
+          # Wait for /healthz — no busy-wait, poll on a short sleep.
+          ready=0
+          for i in $(seq 1 50); do
+            if curl -sf "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1; then
+              ready=1
+              break
+            fi
+            kill -0 "$(cat "$RUNNER_TEMP/fhetch_server.pid")" 2>/dev/null || { echo "::error::server exited before healthz"; exit 1; }
+            sleep 0.2
+          done
+          [ "$ready" = "1" ] || { echo "::error::server did not become healthy"; exit 1; }
+
+      # --opt-level O3 (default): matches FBS's known-good replay opt level.
+      # --target FHE_SIM (not FUNC_SIM_HW): FBS's compiler-tests.yml documents
+      # FUNC_SIM_HW as broken specifically for SDK/NIOBIUM_DIST_BUILD builds —
+      # this repo's server_encrypted_compute_sdk is built the same way, so the
+      # same workaround is assumed here pending its own confirmation run.
+      - name: Run ML-inference — record (hollow) + replay over transport (PASS/FAIL only, compiler output suppressed)
+        run: |
+          set +x
+          export NBCC_FHETCH_SERVER="http://127.0.0.1:$PORT"
+          rc=0
+          python3 harness/run_submission.py --profile single --seed 12345 \
+            --target FHE_SIM --opt-level O3 --skip-build \
+            >"$RUNNER_TEMP/ml-inference-replay.log" 2>&1 || rc=1
+          if [ $rc -eq 0 ]; then
+            echo "compiler E2E: PASS"
+          else
+            echo "::error::compiler E2E FAILED (output suppressed by policy; reproduce locally)"
+          fi
+          exit $rc
+
+      - name: Stop the transport server
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/fhetch_server.pid" ]; then
+            pid="$(cat "$RUNNER_TEMP/fhetch_server.pid")"
+            kill -TERM "$pid" 2>/dev/null || true
+            for i in 1 2 3 4 5; do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+            kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null || true
+          fi
