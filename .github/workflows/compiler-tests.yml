@@ -42,12 +42,15 @@ concurrency:
 jobs:
   compiler-tests:
     name: Compiler tests (self-hosted, GCP)
-    # No size label yet: this workload (MNIST MLP, matmul->ReLU->matmul) is far
-    # smaller than FBS's, so the default gcp-ephemeral machine is the starting
-    # assumption, not a measured number. If this run is memory-starved, add a
-    # measured machine-type label here (see FBS's compiler-tests.yml history
-    # for the memory-monitor pattern used to size that one).
-    runs-on: [self-hosted, gcp-ephemeral]
+    # n2-highmem-16 (128GB): the default gcp-ephemeral machine OOM'd partway
+    # through the record/replay step (run 34404557969 — the VM lost
+    # communication with the Actions server, not a harness/compiler failure).
+    # This is the same ring-2^16 CKKS FHE_SIM workload class as FBS, which
+    # needed this size (measured peak there: ~57-59GB) — matching it here is
+    # the safe starting point rather than re-guessing a smaller number without
+    # a measurement. Revisit with FBS's memory-monitor pattern if this repo's
+    # actual peak turns out to allow downsizing.
+    runs-on: [self-hosted, gcp-ephemeral, n2-highmem-16]
     # Cold OpenFHE build (~15 min, per niobium-client) + pip install torch/
     # torchvision (no persistent cache on an ephemeral VM) + MNIST download/
     # train (data-prep has no pretrained-weights fallback checked into this
