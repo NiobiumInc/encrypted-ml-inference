@@ -25,10 +25,7 @@ on:
   pull_request:
     branches: [main]
   push:
-    # TEMPORARY: ci/add-compiler-tests-workflow added so pushes to this branch
-    # trigger a run while validating the workflow itself. Drop that branch
-    # name before merging to main — push should only fire on main.
-    branches: [main, ci/add-compiler-tests-workflow]
+    branches: [main]
   workflow_dispatch: {}
 
 # Least privilege: the job only needs to read the repo for checkout.
