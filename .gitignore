@@ -85,5 +85,3 @@ submission/test_build/
 # Python caches
 scripts/__pycache__/
 
-# Python venv for the harness deps (CI creates this; see compiler-tests.yml)
-.venv/
