@@ -69,16 +69,57 @@ jobs:
       - name: Install build tooling
         run: |
           sudo apt-get update -qq
-          # python3-pip: the harness's data-prep (harness/generate_dataset.py)
-          # trains harness/mnist against real torch/torchvision — there is no
-          # pretrained-weights fallback checked into this repo. This runner's
-          # base image ships no pip (confirmed in FBS/niobium-client's own
-          # workflow for the smaller python3-numpy case — don't assume
-          # otherwise), so install it via apt, then pip-install the rest.
+          # The harness's data-prep (harness/generate_dataset.py) trains
+          # harness/mnist against real torch/torchvision — there is no
+          # pretrained-weights fallback checked into this repo, so these
+          # really do have to be installed.
+          #
+          # python3-venv is what `make setup-venv` needs. It is already on the
+          # runner image — gcp-github-runners scripts/build-runner-image.sh:26
+          # installs `python3 python3-numpy python3-pip python3-venv` — so this
+          # apt line is belt-and-braces. Keeping it anyway: it costs a no-op
+          # apt call and it is the only thing standing between a future image
+          # change and a job that cannot create a venv at all.
           sudo apt-get install -y --no-install-recommends \
-            build-essential cmake ninja-build python3-pip
-          python3 -m pip install --retries 5 -r requirements.txt
-          python3 -c "import numpy, torch, torchvision" || { echo "::error::torch/torchvision/numpy still not importable after pip install"; exit 1; }
+            build-essential cmake ninja-build python3-pip python3-venv
+          # Use the repo's OWN venv target rather than rolling a second one.
+          # `make setup-venv` (Makefile:65) creates bmenv/ and installs
+          # requirements.txt into it; README:36 documents it as the local
+          # setup, and .gitignore already covers bmenv/. CI now runs the same
+          # code path developers do, which also picks up the `pip install
+          # --upgrade pip` that target does and a hand-rolled venv here did not.
+          #
+          # WHY A VENV AT ALL: Ubuntu 24.04 (gcp-github-runners#43) ships
+          # PEP 668's EXTERNALLY-MANAGED marker, so a bare `pip install` into
+          # the system interpreter fails outright:
+          #   error: externally-managed-environment
+          # Running as root does not exempt it — this is policy, not
+          # permissions. `--break-system-packages` would fix it only on noble:
+          # that flag arrived in pip 23.0.1 and the current 22.04 image ships
+          # pip 22.0.2, so it would break this job today and would have to be
+          # reverted in lockstep if the image were rolled back. A venv is
+          # correct on both bases, so this change is independent of when the
+          # image moves.
+          make setup-venv
+          # Put the venv ahead of the system interpreter for EVERY LATER STEP
+          # (harness/run_submission.py runs in its own step and would otherwise
+          # get the system python3 and fail the same imports).
+          echo "$PWD/bmenv/bin" >> "$GITHUB_PATH"
+
+      # Deliberately a SEPARATE step, and deliberately using bare `python3`.
+      # Checking `bmenv/bin/python -c ...` inside the step above would pass even
+      # if the $GITHUB_PATH line were wrong — it proves the venv exists, not
+      # that later steps will find it, which is the thing this change actually
+      # adds. Run here, the failure is one line of YAML away from its cause.
+      # Without it the first symptom is the ML-inference step ~40 minutes later,
+      # whose output is suppressed by policy, so a ModuleNotFoundError would
+      # surface as "compiler E2E FAILED (output suppressed)" and nothing else.
+      - name: The venv is on PATH for subsequent steps
+        run: |
+          echo "python3 -> $(command -v python3)"
+          python3 -c "import sys; print(sys.prefix)"
+          python3 -c "import numpy, torch, torchvision" \
+            || { echo "::error::venv is not on PATH for later steps — torch/torchvision/numpy not importable as bare python3"; exit 1; }
 
       - name: Build niobium-client + ML-inference stages (release)
         # Public C++/OpenFHE output — OK to show; useful for diagnosing build breaks.
