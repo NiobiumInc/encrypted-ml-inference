@@ -47,7 +47,7 @@ jobs:
     # the safe starting point rather than re-guessing a smaller number without
     # a measurement. Revisit with FBS's memory-monitor pattern if this repo's
     # actual peak turns out to allow downsizing.
-    runs-on: [self-hosted, gcp-ephemeral, n2-highmem-16]
+    runs-on: [self-hosted, gcp-ephemeral, n2-highmem-16, "run-${{ github.run_id }}"]
     # Cold OpenFHE build (~15 min, per niobium-client) + pip install torch/
     # torchvision (no persistent cache on an ephemeral VM) + MNIST download/
     # train (data-prep has no pretrained-weights fallback checked into this
