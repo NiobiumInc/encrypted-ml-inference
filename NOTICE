@@ -2,7 +2,7 @@ THIRD-PARTY SOFTWARE NOTICES AND INFORMATION
 ============================================================
 
 Project: encrypted-ml-inference
-Generated: 2026-08-07
+Generated: 2026-11-09
 Tool: SCANOSS (snippet detection with License dataset)
 Components: 1
 
@@ -27,6 +27,9 @@ COMPONENT ATTRIBUTIONS
   Copyright:
     Copyright 2025 Google LLC
     Copyright 2025 HomomorphicEncryption.org
+    Copyright 2025 Secure Trusted and Assured Microelectronics Arizona State
+    Copyright 2025 Secure Trusted and Assured Microelectronics Arizona State University
+    Copyright  c) 2025 HomomorphicEncryption.org
   License: Apache-2.0
 
 ------------------------------------------------------------
